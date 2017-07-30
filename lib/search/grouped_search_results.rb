@@ -9,10 +9,20 @@ class Search
       extend ActionView::Helpers::TextHelper
     end
 
-    attr_reader :type_filter,
-                :posts, :categories, :users,
-                :more_posts, :more_categories, :more_users,
-                :term, :search_context, :include_blurbs
+    attr_reader(
+      :type_filter,
+      :posts,
+      :categories,
+      :users,
+      :more_posts,
+      :more_categories,
+      :more_users,
+      :term,
+      :search_context,
+      :include_blurbs
+    )
+
+    attr_accessor :search_log_id
 
     def initialize(type_filter, term, search_context, include_blurbs, blurb_length)
       @type_filter = type_filter
@@ -47,8 +57,7 @@ class Search
       end
     end
 
-
-    def self.blurb_for(cooked, term=nil, blurb_length=200)
+    def self.blurb_for(cooked, term = nil, blurb_length = 200)
       cooked = SearchIndexer::HtmlScrubber.scrub(cooked).squish
 
       blurb = nil

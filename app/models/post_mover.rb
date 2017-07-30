@@ -19,7 +19,7 @@ class PostMover
     end
   end
 
-  def to_new_topic(title, category_id=nil)
+  def to_new_topic(title, category_id = nil)
     @move_type = PostMover.move_types[:new_topic]
 
     post = Post.find_by(id: post_ids.first)
@@ -90,7 +90,8 @@ class PostMover
       raw: post.raw,
       topic_id: destination_topic.id,
       acting_user: user,
-      skip_validations: true
+      skip_validations: true,
+      guardian: Guardian.new(user)
     )
 
     PostAction.copy(post, new_post)

@@ -46,6 +46,7 @@ class UploadCreator
 
           return @upload   if is_still_too_big?
 
+          fix_orientation! if should_fix_orientation?
           crop!            if should_crop?
           optimize!        if should_optimize?
         end
@@ -186,6 +187,18 @@ class UploadCreator
     @file.rewind
   end
 
+  def should_fix_orientation?
+    # orientation is between 1 and 8, 1 being the default
+    # cf. http://www.daveperrett.com/articles/2012/07/28/exif-orientation-handling-is-a-ghetto/
+    @image_info.orientation.to_i > 1
+  end
+
+  def fix_orientation!
+    OptimizedImage.ensure_safe_paths!(@file.path)
+    Discourse::Utils.execute_command('convert', @file.path, '-auto-orient', @file.path)
+    extract_image_info!
+  end
+
   def should_crop?
     TYPES_TO_CROP.include?(@opts[:type])
   end
@@ -224,7 +237,7 @@ class UploadCreator
 
   def optimize!
     OptimizedImage.ensure_safe_paths!(@file.path)
-    ImageOptim.new.optimize_image!(@file.path)
+    FileHelper.optimize_image!(@file.path)
     extract_image_info!
   rescue ImageOptim::Worker::TimeoutExceeded
     Rails.logger.warn("ImageOptim timed out while optimizing #{@filename}")

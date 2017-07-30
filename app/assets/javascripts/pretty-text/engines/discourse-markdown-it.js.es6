@@ -1,4 +1,4 @@
-import { default as WhiteLister, whiteListFeature } from 'pretty-text/white-lister';
+import { default as WhiteLister } from 'pretty-text/white-lister';
 import { sanitize } from 'pretty-text/sanitizer';
 import guid from 'pretty-text/guid';
 
@@ -10,10 +10,10 @@ function deprecate(feature, name){
   };
 }
 
-function createHelper(featureName, opts, optionCallbacks, pluginCallbacks, getOptions) {
+function createHelper(featureName, opts, optionCallbacks, pluginCallbacks, getOptions, whiteListed) {
   let helper = {};
   helper.markdownIt = true;
-  helper.whiteList = info => whiteListFeature(featureName, info);
+  helper.whiteList = info => whiteListed.push([featureName, info]);
   helper.registerInline = deprecate(featureName,'registerInline');
   helper.replaceBlock = deprecate(featureName,'replaceBlock');
   helper.addPreProcessor = deprecate(featureName,'addPreProcessor');
@@ -48,18 +48,39 @@ class Ruler {
     return this.rules;
   }
 
+  getRuleForTag(tag) {
+    this.ensureCache();
+    return this.cache[tag];
+  }
+
+  ensureCache() {
+    if (this.cache) { return; }
+
+    this.cache = {};
+    for(let i=this.rules.length-1;i>=0;i--) {
+      let info = this.rules[i];
+      this.cache[info.rule.tag] = info;
+    }
+  }
+
   push(name, rule) {
     this.rules.push({name, rule});
+    this.cache = null;
   }
 }
 
 // block bb code ruler for parsing of quotes / code / polls
 function setupBlockBBCode(md) {
-  md.block.bbcode_ruler = new Ruler();
+  md.block.bbcode = { ruler: new Ruler() };
 }
 
 function setupInlineBBCode(md) {
-  md.inline.bbcode_ruler = new Ruler();
+  md.inline.bbcode = { ruler: new Ruler() };
+}
+
+function setupTextPostProcessRuler(md) {
+  const TextPostProcessRuler = requirejs('pretty-text/engines/discourse-markdown/text-post-process').TextPostProcessRuler;
+  md.core.textPostProcess = { ruler: new TextPostProcessRuler() };
 }
 
 function renderHoisted(tokens, idx, options) {
@@ -73,14 +94,69 @@ function renderHoisted(tokens, idx, options) {
   }
 }
 
+function setupUrlDecoding(md) {
+  // this fixed a subtle issue where %20 is decoded as space in
+  // automatic urls
+  md.utils.lib.mdurl.decode.defaultChars = ';/?:@&=+$,# ';
+}
+
 function setupHoister(md) {
   md.renderer.rules.html_raw = renderHoisted;
 }
+
+const IMG_SIZE_REGEX = /^([1-9]+[0-9]*)x([1-9]+[0-9]*)(\s*,\s*([1-9][0-9]?)%)?$/;
+function renderImage(tokens, idx, options, env, slf) {
+  var token = tokens[idx];
+
+  let alt = slf.renderInlineAsText(token.children, options, env);
+
+  let split = alt.split('|');
+  if (split.length > 1) {
+    let match;
+    let info = split.splice(split.length-1)[0];
+
+    if (match = info.match(IMG_SIZE_REGEX)) {
+      if (match[1] && match[2]) {
+        alt = split.join('|');
+
+        let width = match[1];
+        let height = match[2];
+
+        if (match[4]) {
+          let percent = parseFloat(match[4]) / 100.0;
+          width = parseInt(width * percent);
+          height = parseInt(height * percent);
+        }
+
+        if (token.attrIndex('width') === -1) {
+          token.attrs.push(['width', width]);
+        }
+
+        if (token.attrIndex('height') === -1) {
+          token.attrs.push(['height', height]);
+        }
+      }
+
+    }
+  }
+
+  token.attrs[token.attrIndex('alt')][1] = alt;
+  return slf.renderToken(tokens, idx, options);
+}
+
+function setupImageDimensions(md) {
+  md.renderer.rules.image = renderImage;
+}
+
+let Helpers;
 
 export function setup(opts, siteSettings, state) {
   if (opts.setup) {
     return;
   }
+
+  // we got to require this late cause bundle is not loaded in pretty-text
+  Helpers = Helpers || requirejs('pretty-text/engines/discourse-markdown/helpers');
 
   opts.markdownIt = true;
 
@@ -94,15 +170,16 @@ export function setup(opts, siteSettings, state) {
 
   const check = /discourse-markdown\/|markdown-it\//;
   let features = [];
+  let whiteListed = [];
 
   Object.keys(require._eak_seen).forEach(entry => {
     if (check.test(entry)) {
-      const module = require(entry);
+      const module = requirejs(entry);
       if (module && module.setup) {
 
         const featureName = entry.split('/').reverse()[0];
         features.push(featureName);
-        module.setup(createHelper(featureName, opts, optionCallbacks, pluginCallbacks, getOptions));
+        module.setup(createHelper(featureName, opts, optionCallbacks, pluginCallbacks, getOptions, whiteListed));
       }
     }
   });
@@ -124,6 +201,10 @@ export function setup(opts, siteSettings, state) {
     delete opts[entry];
   });
 
+  copy.helpers = {
+    textReplace: Helpers.textReplace
+  };
+
   opts.discourse = copy;
   getOptions.f = () => opts.discourse;
 
@@ -132,13 +213,16 @@ export function setup(opts, siteSettings, state) {
     html: true,
     breaks: opts.discourse.features.newline,
     xhtmlOut: false,
-    linkify: true,
+    linkify: opts.discourse.features.linkify,
     typographer: siteSettings.enable_markdown_typographer
   });
 
+  setupUrlDecoding(opts.engine);
   setupHoister(opts.engine);
+  setupImageDimensions(opts.engine);
   setupBlockBBCode(opts.engine);
   setupInlineBBCode(opts.engine);
+  setupTextPostProcessRuler(opts.engine);
 
   pluginCallbacks.forEach(([feature, callback])=>{
     if (opts.discourse.features[feature]) {
@@ -150,10 +234,16 @@ export function setup(opts, siteSettings, state) {
   opts.markdownIt = true;
   opts.setup = true;
 
-  if (!opts.discourse.sanitizer) {
+  if (!opts.discourse.sanitizer || !opts.sanitizer) {
     const whiteLister = new WhiteLister(opts.discourse);
+
+    whiteListed.forEach(([feature, info]) => {
+      whiteLister.whiteListFeature(feature, info);
+    });
+
     opts.sanitizer = opts.discourse.sanitizer = (!!opts.discourse.sanitize) ? a=>sanitize(a, whiteLister) : a=>a;
   }
+
 }
 
 export function cook(raw, opts) {
