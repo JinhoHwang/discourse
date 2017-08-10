@@ -7,7 +7,7 @@ SignupRoute.reopen({
     var canSignUp = this.controllerFor("application").get('canSignUp');
 
     if (!this.siteSettings.login_required) {
-      this.replaceWith('discovery.latest').then(e => {
+      this.replaceWith('discovery.new').then(e => {
         if (canSignUp) {
           Ember.run.next(() => e.send('showCreateAccount'));
         }
